@@ -1,0 +1,313 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OCR Review Editor</title>
+<style>
+:root{--bg:#f6f4ef;--panel:#fff;--ink:#1d1d1b;--muted:#6b6a65;--line:#dcd8cf;--warn:#fff1c7;--warnb:#d9a400;--ok:#dff3e4;--okb:#2f8f4e;--accent:#2b5bb5}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1a;--panel:#252523;--ink:#ecebe6;--muted:#a3a29c;--line:#3a3936;--warn:#4a3d10;--warnb:#e2b52b;--ok:#183a24;--okb:#5ccf84;--accent:#7aa2ff}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,Segoe UI,sans-serif}
+header{display:flex;gap:10px;align-items:center;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:5}
+header h1{font-size:16px;margin:0 auto 0 0}
+button{font:inherit;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer}
+button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+button.on{outline:2px solid var(--accent)}
+main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}
+.scanwrap{position:sticky;top:64px;align-self:start}
+.pagenav{display:flex;gap:6px;align-items:center;margin-bottom:8px}
+.pagenav[hidden]{display:none}
+.pagenav input{width:4.5em;font:inherit;padding:5px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);text-align:center}
+.scan{overflow:auto;max-height:78vh}
+.imgwrap{position:relative;width:100%}
+.imgwrap.zoom{width:220%}
+.imgwrap img{width:100%;display:block;cursor:zoom-in;-webkit-user-drag:none;user-select:none}
+.imgwrap.zoom img{cursor:zoom-out}
+.imgwrap.drawing,.imgwrap.drawing img{cursor:crosshair;touch-action:none}
+.hl{position:absolute;border:3px solid var(--accent);background:rgba(43,91,181,.15);border-radius:4px;pointer-events:none;animation:hlpulse .6s ease-in-out 3}
+.hl.draft{border-style:dashed;animation:none}
+@keyframes hlpulse{0%,100%{box-shadow:0 0 0 0 rgba(43,91,181,0)}50%{box-shadow:0 0 0 8px rgba(43,91,181,.45)}}
+#loc:empty{display:none}
+#loc{color:var(--accent);font-weight:600}
+.pop .row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0}
+.scan iframe{width:100%;height:76vh;border:0}
+.doc{font-family:"Times New Roman",serif;font-size:17px;line-height:1.8}
+.doc p{margin:0 0 12px}
+.doc p.center{text-align:center}
+.doc p.indent{text-indent:2em}
+.pagehdr{font:12px system-ui,sans-serif;color:var(--muted);border-bottom:1px dashed var(--line);margin:0 0 12px;padding-bottom:4px}
+.doc [contenteditable]{outline:none;border-radius:3px}
+.doc [contenteditable]:focus{background:rgba(120,140,255,.12)}
+.chip{background:var(--warn);border-bottom:2px solid var(--warnb);padding:1px 3px;border-radius:3px;cursor:pointer}
+.chip.done{background:var(--ok);border-bottom-color:var(--okb)}
+.chip.active{outline:2px solid var(--accent)}
+.pop{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
+.pop h3{margin:0 0 6px;font-size:15px}
+.note{color:var(--muted);font-size:13px;margin:0 0 8px}
+.pop label{display:block;padding:4px 0}
+.pop input[type=text]{width:100%;font:inherit;padding:6px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink)}
+.status{font-size:13px;color:var(--muted)}
+ul.gram{font-size:13px;color:var(--muted);padding-left:18px}
+.err{padding:24px;color:#b00}
+</style>
+<script src="__DATA_FILE__"></script>
+<script>
+// Per-page data: the main file lists "pageFiles"; each page file assigns
+// window.REVIEW_PAGES["<stem>"] = {...}. document.write keeps them synchronous on file://.
+// Optional "wordFiles" (from scripts/word_boxes.py) assign window.REVIEW_WORDS["<stem>"] = word positions.
+window.REVIEW_PAGES=window.REVIEW_PAGES||{};window.REVIEW_WORDS=window.REVIEW_WORDS||{};
+if(window.REVIEW)[...(window.REVIEW.pageFiles||[]),...(window.REVIEW.wordFiles||[])].forEach(f=>document.write(`<script src="${encodeURI(f)}"><\/script>`));
+</script>
+<script>
+(function(){
+  const R=window.REVIEW;if(!R||!R.pageFiles)return;
+  const stem=f=>f.replace(/^.*\//,"").replace(/\.js$/i,"");
+  R.notes=R.notes||[];
+  R.pages=R.pageFiles.map((f,i)=>{
+    const pg=window.REVIEW_PAGES[stem(f)];
+    if(!pg){R.notes.push(`Page ${i+1}: data file "${f}" is missing or invalid.`);return {image:f.replace(/\.js$/i,".png"),paragraphs:[{style:"",segments:[`[page ${i+1} missing: ${f}]`]}]}}
+    (pg.notes||[]).forEach(n=>R.notes.push(`Page ${i+1}: ${n}`));
+    pg.words=window.REVIEW_WORDS[stem(f)]||[]; // [paragraph, segment, word index, [[x,y,w,h],...], approx?]
+    return pg;
+  });
+})();
+</script>
+</head>
+<body>
+<header>
+  <h1 id="title">Review</h1>
+  <span class="status" id="status"></span>
+  <button id="next">Next unreviewed</button>
+  <button id="reset">Reset</button>
+  <button id="txt">Export .txt</button>
+  <button class="primary" id="docx">Export .docx</button>
+</header>
+<main>
+  <section class="card scanwrap"><div class="pagenav" id="pagenav"><button id="prev">&lsaquo; Prev</button><input type="number" id="pagenum" min="1" aria-label="Page"><span id="pagetotal"></span><button id="nextpg">Next &rsaquo;</button></div><p class="note" id="loc"></p><div class="scan" id="scan"></div><p class="note">Click the image to zoom. Pick a yellow section or click a word to see where it is on the scan.</p></section>
+  <section class="card">
+    <div class="doc" id="doc"></div>
+    <div class="pop" id="pop"><p class="note">Click a <span class="chip">yellow</span> section to choose a reading. Plain text is editable directly. Your changes are saved in this browser.</p></div>
+    <div class="pop"><h3>Notes (corrections &amp; grammar check)</h3><ul class="gram" id="notes"></ul></div>
+  </section>
+</main>
+<script>
+const R = window.REVIEW;
+if(!R){document.body.innerHTML='<p class="err">Data file "__DATA_FILE__" not found or invalid. It must sit next to this HTML and assign window.REVIEW.</p>';throw new Error("no data")}
+document.getElementById("title").textContent=R.title||"Review";document.title=(R.title||"OCR")+" review";
+const KEY="ocr_review:"+(R.title||location.pathname);
+let state=load(),active=null,curPage=0;
+function load(){try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){return {}}}
+function save(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){} status()}
+const chips=[];R.pages.forEach((pg,pi)=>pg.paragraphs.forEach(p=>p.segments.forEach(s=>{if(typeof s!=="string")chips.push({c:s,page:pi})})));
+function segText(k,seg){
+  if(typeof seg==="string") return state[k]??seg;
+  const s=state[seg.id]||{};
+  if(s.custom) return s.custom;
+  return seg.options[s.pick??seg.suggested??0].text;
+}
+function forEachPara(fn){R.pages.forEach((pg,gi)=>pg.paragraphs.forEach((p,pi)=>fn(p,gi,pi)))}
+const key=(gi,pi,si)=>`${gi}:${pi}:${si}`;
+function status(){const d=chips.filter(x=>state[x.c.id]?.done).length;document.getElementById("status").textContent=`${d}/${chips.length} difficult sections reviewed`}
+function showPage(i){
+  stopDraw();curPage=i;const pg=R.pages[i],sc=document.getElementById("scan");
+  document.getElementById("pagenum").value=i+1;
+  document.getElementById("prev").disabled=i===0;document.getElementById("nextpg").disabled=i===R.pages.length-1;
+  if(active&&chips.find(x=>x.c.id===active)?.page!==i){active=null;document.getElementById("pop").innerHTML=POP_HINT}
+  render();
+  document.getElementById("loc").textContent="";
+  if(!pg.image){sc.innerHTML='<p class="note">No image for this page.</p>';return}
+  if(isPdf(pg)) sc.innerHTML=`<iframe src="${pg.image}#page=${pg.page||i+1}"></iframe>`;
+  else{sc.innerHTML=`<div class="imgwrap"><img src="${pg.image}" alt="Scan of page ${i+1}" draggable="false"></div>`;attachWrap(sc.querySelector(".imgwrap"))}
+}
+const isPdf=pg=>/\.pdf$/i.test(pg.image||"");
+
+// ---- location of a difficult section on the scan ----
+// boxes are fractions of the image size (0-1), so they stay aligned at any zoom.
+let drawing=null,skipClick=false;
+const pageOf=c=>chips.find(x=>x.c===c)?.page??curPage;
+const boxesOf=c=>state[c.id]?.boxes||c.boxes||[];
+const boxCss=b=>({left:b.x*100+"%",top:b.y*100+"%",width:b.w*100+"%",height:b.h*100+"%"});
+const curWrap=()=>document.querySelector("#scan .imgwrap");
+function describe(b){
+  const cx=b.x+b.w/2,cy=b.y+b.h/2;
+  const v=cy<.33?"top":cy<.67?"middle":"bottom",hz=cx<.33?"left":cx<.67?"centre":"right";
+  return `${v} ${hz}, ~${Math.round(b.y*100)} % from the top`;
+}
+function scrollToBox(el){
+  const sc=document.getElementById("scan"),r=el.getBoundingClientRect(),s=sc.getBoundingClientRect();
+  sc.scrollBy({left:r.left-s.left-(sc.clientWidth-r.width)/2,top:r.top-s.top-(sc.clientHeight-r.height)/2,behavior:"smooth"});
+}
+function showBoxes(c){
+  const page=pageOf(c);if(curPage!==page)showPage(page);
+  drawBoxes(boxesOf(c),page);
+}
+function drawBoxes(bx,page){
+  const w=curWrap(),loc=document.getElementById("loc");
+  loc.textContent="";
+  if(!w){ // PDF in an iframe: the viewer has its own zoom, so we can only describe the spot
+    if(bx.length&&isPdf(R.pages[page]))loc.textContent="Approximate location: "+bx.map(describe).join("; ");
+    return;
+  }
+  w.querySelectorAll(".hl").forEach(e=>e.remove());
+  bx.forEach(b=>{const d=document.createElement("div");d.className="hl";Object.assign(d.style,boxCss(b));w.appendChild(d)});
+  const first=w.querySelector(".hl");if(!first)return;
+  const img=w.querySelector("img");
+  if(img.complete)scrollToBox(first);else img.addEventListener("load",()=>scrollToBox(first),{once:true});
+}
+function startDraw(c){
+  const page=pageOf(c);if(curPage!==page)showPage(page);
+  const w=curWrap();if(!w)return;
+  drawing=c;w.classList.add("drawing");
+  document.getElementById("loc").textContent="Drag a rectangle over the right spot on the scan (Esc cancels).";
+}
+function stopDraw(){
+  const w=curWrap();if(w)w.classList.remove("drawing");
+  if(drawing)document.getElementById("loc").textContent="";
+  drawing=null;
+}
+function attachWrap(w){
+  let start=null,draft=null;
+  const frac=e=>{const r=w.getBoundingClientRect(),cl=v=>Math.min(1,Math.max(0,v));return {x:cl((e.clientX-r.left)/r.width),y:cl((e.clientY-r.top)/r.height)}};
+  const rect=(a,b)=>{const r=v=>Math.round(v*1000)/1000;return {x:r(Math.min(a.x,b.x)),y:r(Math.min(a.y,b.y)),w:r(Math.abs(a.x-b.x)),h:r(Math.abs(a.y-b.y))}};
+  w.addEventListener("pointerdown",e=>{if(!drawing)return;e.preventDefault();start=frac(e);draft=document.createElement("div");draft.className="hl draft";w.appendChild(draft);w.setPointerCapture(e.pointerId)});
+  w.addEventListener("pointermove",e=>{if(start)Object.assign(draft.style,boxCss(rect(start,frac(e))))});
+  w.addEventListener("pointerup",e=>{
+    if(!start)return;
+    const b=rect(start,frac(e)),c=drawing;start=null;draft.remove();
+    skipClick=true;setTimeout(()=>skipClick=false,0);
+    if(b.w>.005&&b.h>.005){state[c.id]={...(state[c.id]||{}),boxes:[b]};save()}
+    stopDraw();if(active===c.id)showPop(c);showBoxes(c);
+  });
+  w.addEventListener("cancel-draft",()=>{if(start){start=null;draft.remove()}});
+  w.onclick=()=>{
+    if(drawing||skipClick)return;
+    w.classList.toggle("zoom");
+    const hl=w.querySelector(".hl");if(hl)scrollToBox(hl);
+  };
+}
+// ---- clicking a plain word shows it on the scan (word positions from the PDF's OCR layer) ----
+let wordIdx=null,wordIdxPage=-1;
+function wordBoxes(gi,pi,si,wi){
+  if(wordIdxPage!==gi){wordIdx=new Map(R.pages[gi].words.map(e=>[`${e[0]}:${e[1]}:${e[2]}`,e]));wordIdxPage=gi}
+  const e=wordIdx.get(`${pi}:${si}:${wi}`);
+  return e&&{boxes:e[3].map(([x,y,w,h])=>({x,y,w,h})),approx:!!e[4]};
+}
+function showWord(sp,gi,pi,si){
+  if(drawing||!R.pages[gi].words.length)return;
+  const sel=getSelection();if(!sel.isCollapsed||!sp.contains(sel.anchorNode))return;
+  const off=sel.anchorOffset;let wi=-1,i=0;
+  for(const m of sp.textContent.matchAll(/\S+/g)){if(off>=m.index&&off<=m.index+m[0].length){wi=i;break}i++}
+  const wb=wi<0?null:wordBoxes(gi,pi,si,wi);
+  drawBoxes(wb?wb.boxes:[],gi);
+  if(wb?.approx)document.getElementById("loc").textContent="Approximate position (word not recognised on the scan).";
+}
+document.addEventListener("keydown",e=>{if(e.key==="Escape"&&drawing){curWrap()?.dispatchEvent(new Event("cancel-draft"));stopDraw()}});
+function render(){
+  const doc=document.getElementById("doc");doc.innerHTML="";
+  // Only the current page is shown; keys still use the page index, so saved state is unchanged.
+  const gi=curPage,pg=R.pages[gi];
+  if(R.pages.length>1){const open=chips.filter(x=>x.page===gi&&!state[x.c.id]?.done).length,h=document.createElement("div");h.className="pagehdr";h.textContent=`Page ${gi+1} / ${R.pages.length}`+(open?` — ${open} unreviewed`:"");doc.appendChild(h)}
+  pg.paragraphs.forEach((p,pi)=>{
+    const el=document.createElement("p");if(p.style)el.className=p.style;
+    p.segments.forEach((s,si)=>{
+      const sp=document.createElement("span"),k=key(gi,pi,si);
+      if(typeof s==="string"){sp.contentEditable="true";sp.textContent=segText(k,s);sp.oninput=()=>{state[k]=sp.textContent;save()};sp.onfocus=()=>{if(curPage!==gi)showPage(gi)};sp.onclick=()=>showWord(sp,gi,pi,si)}
+      else{sp.className="chip"+(state[s.id]?.done?" done":"")+(active===s.id?" active":"");sp.textContent=segText(k,s);sp.title=s.title||"";sp.id="chip-"+s.id;
+        sp.onclick=()=>{stopDraw();active=s.id;render();showPop(s);showBoxes(s)}}
+      el.appendChild(sp);
+    });
+    doc.appendChild(el);
+  });
+  status();
+}
+const h=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+function showPop(c){
+  const st=state[c.id]||{},pop=document.getElementById("pop"),sug=c.suggested??0;
+  const pick=st.custom?-1:(st.pick??sug);
+  pop.innerHTML=`<h3>${h(c.title||"Uncertain section")}</h3><p class="note">${h(c.note||"")}</p>`+
+    c.options.map((o,i)=>`<label><input type="radio" name="o" value="${i}" ${pick===i?"checked":""}> ${h(o.text)}${o.label?` <i>(${h(o.label)})</i>`:""}${i===sug?" <b>(suggested)</b>":""}</label>`).join("")+
+    `<label><input type="radio" name="o" value="-1" ${pick===-1?"checked":""}> Custom:</label><input type="text" id="cust" value="${h(st.custom||"")}">`+
+    `<p class="row"><button class="primary" id="ok">Mark reviewed</button>`+
+    (isPdf(R.pages[pageOf(c)])?"":`<button id="fix" title="Drag a rectangle on the scan to correct where this section is">Fix location</button>`)+
+    (st.boxes?`<button id="unfix">Use original location</button>`:"")+`</p>`;
+  const apply=done=>{
+    const v=+pop.querySelector("input[name=o]:checked").value,cust=document.getElementById("cust").value,cur=state[c.id]||{};
+    state[c.id]={...cur,pick:v<0?sug:v,custom:v<0&&cust.trim()?cust:"",done:done||cur.done||false};save();render();
+  };
+  pop.querySelectorAll("input[name=o]").forEach(r=>r.onchange=()=>apply(false));
+  document.getElementById("cust").oninput=()=>{pop.querySelector("input[value='-1']").checked=true;apply(false)};
+  document.getElementById("ok").onclick=()=>{stopDraw();apply(true);afterReviewed(c)};
+  const fx=document.getElementById("fix");if(fx)fx.onclick=()=>startDraw(c);
+  const un=document.getElementById("unfix");
+  if(un)un.onclick=()=>{stopDraw();delete state[c.id].boxes;save();showPop(c);showBoxes(c)};
+}
+function select(c){stopDraw();const pg=pageOf(c);if(curPage!==pg)showPage(pg);active=c.id;render();showPop(c);showBoxes(c);document.getElementById("chip-"+c.id)?.scrollIntoView({block:"nearest"})}
+// After "Mark reviewed": jump to the next unreviewed mark on this page; if there is none, ask before switching pages.
+function afterReviewed(c){
+  const pop=document.getElementById("pop"),i=chips.findIndex(x=>x.c===c),page=chips[i].page;
+  const order=[...chips.slice(i+1),...chips.slice(0,i)].filter(x=>!state[x.c.id]?.done);
+  const samePage=order.find(x=>x.page===page);
+  if(samePage)return select(samePage.c);
+  active=null;render();showBoxes(c);
+  const other=order.find(x=>x.page>page)||order[0];
+  if(!other){pop.innerHTML='<p class="note">All difficult sections are reviewed. You can export the .docx now.</p>';return}
+  pop.innerHTML=`<p class="note">No more unreviewed marks on page ${page+1}. Go to page ${other.page+1}?</p><p class="row"><button class="primary" id="goyes">Yes, go to page ${other.page+1}</button><button id="gono">No, stay here</button></p>`;
+  document.getElementById("goyes").onclick=()=>select(other.c);
+  document.getElementById("gono").onclick=()=>{pop.innerHTML='<p class="note">Saved. Click "Next unreviewed" or pick another yellow section.</p>'};
+}
+document.getElementById("next").onclick=()=>{const n=chips.find(x=>!state[x.c.id]?.done);if(n)select(n.c)};
+document.getElementById("reset").onclick=()=>{if(window.confirm("Discard all your edits?")){state={};save();render()}};
+document.getElementById("notes").innerHTML=(R.notes||[]).map(n=>`<li>${h(n)}</li>`).join("")||"<li>No notes.</li>";
+const POP_HINT=document.getElementById("pop").innerHTML;
+{ // page navigation: drives both the scan and the text panel
+  const n=R.pages.length,num=document.getElementById("pagenum"),go=v=>showPage(Math.min(n,Math.max(1,Math.round(+v)||1))-1);
+  document.getElementById("pagenav").hidden=n<2;num.max=n;document.getElementById("pagetotal").textContent=`/ ${n}`;
+  num.onchange=()=>go(num.value);num.onkeydown=e=>{if(e.key==="Enter")go(num.value)};
+  document.getElementById("prev").onclick=()=>go(curPage);document.getElementById("nextpg").onclick=()=>go(curPage+2);
+}
+
+// ---- export ----
+const base=(R.title||"document").replace(/\.[^.]+$/,"");
+function download(name,blob){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
+document.getElementById("txt").onclick=()=>{const out=[];forEachPara((p,gi,pi)=>out.push(p.segments.map((s,si)=>segText(key(gi,pi,si),s)).join("")));download(base+".txt",new Blob([out.join("\n\n")],{type:"text/plain;charset=utf-8"}))};
+const x=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+function run(text,hl){return `<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="24"/>${hl?'<w:highlight w:val="yellow"/>':""}<w:lang w:val="${R.lang||"sl-SI"}"/></w:rPr><w:t xml:space="preserve">${x(text)}</w:t></w:r>`}
+function documentXml(){
+  let body="";
+  R.pages.forEach((pg,gi)=>{
+    if(gi>0&&R.pageBreaks!==false) body+='<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
+    pg.paragraphs.forEach((p,pi)=>{
+      const ppr=p.style==="center"?'<w:jc w:val="center"/>':p.style==="indent"?'<w:ind w:firstLine="567"/>':"";
+      const runs=p.segments.map((s,si)=>run(segText(key(gi,pi,si),s),typeof s!=="string"&&!state[s.id]?.done)).join("");
+      body+=`<w:p><w:pPr><w:spacing w:after="160" w:line="360" w:lineRule="auto"/>${ppr}</w:pPr>${runs}</w:p>`;
+    });
+  });
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr><w:pgSz w:w="11906" w:h="16838"/><w:pgMar w:top="1417" w:right="1417" w:bottom="1417" w:left="1417" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+}
+const CT=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>`;
+const RELS=`<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>`;
+const CRC=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}return t})();
+const crc32=b=>{let c=0xFFFFFFFF;for(const v of b)c=CRC[(c^v)&255]^(c>>>8);return (c^0xFFFFFFFF)>>>0};
+function put(dv,fields){fields.forEach(([o,v,s])=>s===4?dv.setUint32(o,v,true):dv.setUint16(o,v,true))}
+function zip(files){ // stored (uncompressed) zip
+  const enc=new TextEncoder(),parts=[],central=[];let off=0;
+  for(const [name,content] of files){
+    const n=enc.encode(name),d=enc.encode(content),c=crc32(d);
+    const lh=new DataView(new ArrayBuffer(30));
+    put(lh,[[0,0x04034b50,4],[4,20,2],[6,0x0800,2],[8,0,2],[10,0,2],[12,0x21,2],[14,c,4],[18,d.length,4],[22,d.length,4],[26,n.length,2],[28,0,2]]);
+    const ch=new DataView(new ArrayBuffer(46));
+    put(ch,[[0,0x02014b50,4],[4,20,2],[6,20,2],[8,0x0800,2],[10,0,2],[12,0,2],[14,0x21,2],[16,c,4],[20,d.length,4],[24,d.length,4],[28,n.length,2],[30,0,2],[32,0,2],[34,0,2],[36,0,2],[38,0,4],[42,off,4]]);
+    parts.push(lh,n,d);central.push(ch,n);off+=30+n.length+d.length;
+  }
+  const cd=central.reduce((a,v)=>a+v.byteLength,0),e=new DataView(new ArrayBuffer(22));
+  put(e,[[0,0x06054b50,4],[4,0,2],[6,0,2],[8,files.length,2],[10,files.length,2],[12,cd,4],[16,off,4],[20,0,2]]);
+  return new Blob([...parts,...central,e],{type:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"});
+}
+document.getElementById("docx").onclick=()=>download(base+".docx",zip([["[Content_Types].xml",CT],["_rels/.rels",RELS],["word/document.xml",documentXml()]]));
+showPage(0);
+</script>
+</body>
+</html>
