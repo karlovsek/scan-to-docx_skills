@@ -39,6 +39,7 @@ Rules (they exist because the output should be the *author's final intended text
 - **Apply handwritten corrections:** a strike-through deletes; text written above the line or in the margin with a caret/slash/hook is inserted at that mark; overtyped letters take the corrected letter; small numbers written above words (1, 2, 3) mark a new word order. Note each correction you applied.
 - **Join line-break hyphenation** (`govo-` / `ril` → `govoril`) unless the hyphen is a real one. A word split across a page break goes whole onto the earlier page.
 - **Keep the original orthography, word order, capitalization and style.** Don't modernize spelling or "improve" sentences.
+- **Keep the scan's lines:** end every line of the scan with `\n` in the segment text, in place of the space at the line end (`"... je izbral\nvedno močne ..."`); a paragraph end needs none. A hyphenated word goes whole onto the line where it starts. An insertion belongs to the line it is inserted into. The editor shows the text line by line, numbered, next to the scan, so the user can compare row N with row N.
 - Keep page numbers/headers as their own paragraph (e.g. centered `- 11 -`); keep paragraph breaks and first-line indents. A page that starts mid-sentence keeps its lowercase start.
 - Don't invent text you can't see. Illegible → a flagged spot with your best guess plus `[nečitljivo]`/`[illegible]` as an option.
 
@@ -83,7 +84,7 @@ Write `<name>_pages/<stem>.js` for each page, next to its image (`p-1.js` next t
        "suggested": 0,
        "boxes": [{"x": 0.45, "y": 0.215, "w": 0.13, "h": 0.085}],
        "options": [{"text": "na sodniji"}, {"text": "tu na sodniji"}, {"text": "tu", "label": "typed text only"}]},
-      " brez moči in premoženja ..."
+      " brez moči\nin premoženja ..."
     ]}
   ]
 };
@@ -93,6 +94,7 @@ Write `<name>_pages/<stem>.js` for each page, next to its image (`p-1.js` next t
 - `image` is relative to the folder of the editor (the source file's folder), so it includes `<name>_pages/`. Without rendered images: `"image": "sample1.pdf", "page": 1`.
 - `notes` are per page; the editor shows them prefixed with the page number.
 - `style` is `""`, `"indent"` (first-line indent) or `"center"`. `label` is an optional explanation shown in the app but not exported. `boxes` is only for showing the location in the editor.
+- `\n` marks the end of a scan line (section 2) and may also appear inside an option's `text` when the line ends within the choice.
 - Choice ids must be unique across the whole document: prefix them with the page number (`p12c1`, `p12c2`, ...).
 - Use strict JSON after the `=` (no comments in the real file).
 
@@ -121,11 +123,11 @@ Copy `assets/editor.html` to `<name>_editor.html` in the source file's folder, r
 
 ### 5d. Word positions (PDF with a text layer)
 
-If the source is a PDF, run `python3 <skill dir>/scripts/word_boxes.py <source.pdf> <name>_review_data.js` after 5b. It reads the word positions from the PDF's own OCR layer (Adobe Scan and most phone scanner apps include one; needs Poppler's `pdftotext`), matches them to your transcript, writes `<stem>.words.js` next to each page file and adds `"wordFiles"` to the index. Clicking a plain word in the editor then highlights it on the scan. It prints how many words per page got a position; a PDF without a text layer gets "no text layer" and nothing changes (the editor works as before). Rerun it whenever a page file is rewritten, since positions refer to paragraph/segment/word numbers.
+If the source is a PDF, run `python3 <skill dir>/scripts/word_boxes.py <source.pdf> <name>_review_data.js` after 5b. It reads the word positions from the PDF's own OCR layer (Adobe Scan and most phone scanner apps include one; needs Poppler's `pdftotext`), matches them to your transcript, writes `<stem>.words.js` next to each page file and adds `"wordFiles"` to the index. Clicking a plain word in the editor then highlights it on the scan. It prints how many words per page got a position; a PDF without a text layer gets "no text layer" and nothing changes (the editor works as before). It also uses the OCR rows for the line breaks: on a page without any `\n` it fills them in and rewrites the page file; on a page with them it only checks them and prints the lines that differ from the scan (look at those lines on the image and fix the transcript if the scan agrees). Like the word positions, this uses the text layer only for positions and lines, never for the text. Rerun it whenever a page file is rewritten, since positions refer to paragraph/segment/word numbers.
 
 ## 6. Export from the editor
 
-The .docx is made by the user, not by you. They open the editor, review the yellow spots and click **Export .docx**. The editor shows one page at a time; the page navigation above the scan switches both the scan and the text. The export uses their reviewed choices; spots they haven't reviewed yet are highlighted yellow in the .docx so they can find them in Word.
+The .docx is made by the user, not by you. They open the editor, review the yellow spots and click **Export .docx**. The editor shows one page at a time; the page navigation above the scan switches both the scan and the text. The text is shown line by line, numbered like the scan (page-number lines are not counted); the export joins the lines into normal paragraphs. The export uses their reviewed choices; spots they haven't reviewed yet are highlighted yellow in the .docx so they can find them in Word.
 
 ## 7. Report back
 

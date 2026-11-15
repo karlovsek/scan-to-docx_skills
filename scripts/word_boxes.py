@@ -7,8 +7,12 @@ Reads word boxes with `pdftotext -bbox` (Poppler), aligns them with the transcri
 page files, writes <stem>.words.js next to each page file and sets "wordFiles" in the index.
 The editor then highlights a clicked word on the scan. Needs a PDF with a text layer
 (Adobe Scan, most phone scanner apps); without one it reports 0 words and changes nothing.
+
+Also uses the OCR rows for the transcript's line breaks ("\n" in segment text = end of a scan
+line): a page without any is filled in (its page file is rewritten), a page with them is only
+checked and the differences are printed. The text layer gives positions only, never text.
 """
-import html, json, re, subprocess, sys, unicodedata
+import html, json, re, statistics, subprocess, sys, unicodedata
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -16,6 +20,9 @@ MIN_SIM = 0.6   # minimum similarity for two words to count as the same word
 MERGE_SIM = 0.8   # stricter minimum when words are joined (split words, missing spaces)
 BAND = 80       # alignment only looks this many words off the diagonal
 PAD = 0.003     # padding around each box, in page fractions
+ROW_GAP = 0.4   # a new OCR row starts where word centres jump by more than this x median word height
+INTERLINE = 0.6  # a short row closer than this x line pitch to a full row is interlinear handwriting
+PAGE_NO = re.compile(r"^[\s\-–—.]*\d+[\s\-–—.]*$")  # a paragraph with only a page number, e.g. "- 8 -"
 
 
 def load_js(path):
@@ -37,7 +44,7 @@ def pdf_words(pdf):
     return pages
 
 
-FOLD = str.maketrans({"đ": "d", "ð": "d", "ł": "l", "ø": "o", "ı": "i", "0": "o", "1": "l"})
+FOLD = str.maketrans({"đ": "d", "ð": "d", "ł": "l", "ø": "o", "ı": "i", "0": "o", "1": "l", "2": "z"})
 
 
 def norm(t):
@@ -54,6 +61,10 @@ def sim(a, b):
         return 0.0
     r = SequenceMatcher(None, a, b).ratio()
     return r if r >= MIN_SIM else 0.0
+
+
+def seg_text(s):
+    return s if isinstance(s, str) else s["options"][s.get("suggested", 0)]["text"]
 
 
 def transcript_tokens(page):
@@ -120,9 +131,7 @@ def same_line(a, b):
     return abs((a[1] + a[3]) / 2 - (b[1] + b[3]) / 2) < max(ha, hb) / 2
 
 
-def page_entries(page, ocr):
-    toks = transcript_tokens(page)
-    pairs = align([norm(t) for _, t in toks], [norm(w["text"]) for w in ocr])
+def page_entries(toks, pairs, ocr):
     boxes = {i: [ocr[j]["box"] for j in js] for i, js in pairs.items()}
     approx = {}
     # unmatched words between two matched words on the same line: share the gap between them
@@ -162,6 +171,168 @@ def page_entries(page, ocr):
     return out, plain, sum(1 for t in boxes if toks[t][0] is not None), sum(1 for t in approx if toks[t][0] is not None)
 
 
+def token_spans(page):
+    """(paragraph, segment, start, end) of each transcript word, in the order of transcript_tokens."""
+    return [(pi, si, m.start(), m.end())
+            for pi, p in enumerate(page.get("paragraphs", []))
+            for si, s in enumerate(p.get("segments", []))
+            for m in re.finditer(r"\S+", seg_text(s))]
+
+
+def scan_rows(ocr):
+    """Row number of each OCR word, rows clustered by vertical centre. A short row (<= 2 words) close to
+    a full row is interlinear handwriting or a mark ("2 3"); its words count to the nearest full row."""
+    if not ocr:
+        return []
+    cy = [(w["box"][1] + w["box"][3]) / 2 for w in ocr]
+    h = statistics.median(w["box"][3] - w["box"][1] for w in ocr)
+    rows, last = [], None
+    for j in sorted(range(len(ocr)), key=cy.__getitem__):
+        if last is None or cy[j] - last > ROW_GAP * h:
+            rows.append([])
+        rows[-1].append(j)
+        last = cy[j]
+    centre = [statistics.mean(cy[j] for j in r) for r in rows]
+    full = [r for r in range(len(rows)) if len(rows[r]) > 2]
+    target = list(range(len(rows)))
+    if len(full) > 1:
+        pitch = statistics.median(centre[b] - centre[a] for a, b in zip(full, full[1:]))
+        for r in range(len(rows)):
+            if len(rows[r]) <= 2:
+                f = min(full, key=lambda f: abs(centre[f] - centre[r]))
+                if abs(centre[f] - centre[r]) < INTERLINE * pitch:
+                    target[r] = f
+    rank = {r: i for i, r in enumerate(sorted(set(target)))}
+    row_of = [0] * len(ocr)
+    for r, js in enumerate(rows):
+        for j in js:
+            row_of[j] = rank[target[r]]
+    return row_of
+
+
+def scan_breaks(spans, pairs, row_of):
+    """Words that start a new scan line inside their paragraph (indices into spans)."""
+    n = len(spans)
+    # a word split over two lines belongs to the row where it starts
+    row = [row_of[pairs[t][0]] if pairs.get(t) else None for t in range(n)]
+    for t in range(1, n):  # an unmatched word is on the line of the word before it ...
+        if row[t] is None and spans[t][0] == spans[t - 1][0]:
+            row[t] = row[t - 1]
+    for t in range(n - 2, -1, -1):  # ... or, at a paragraph start, of the word after it
+        if row[t] is None and spans[t][0] == spans[t + 1][0]:
+            row[t] = row[t + 1]
+    prev = -1
+    for t in range(n):  # rows never go back up the page
+        prev = row[t] = max(prev, row[t] if row[t] is not None else prev)
+    return {t for t in range(1, n) if spans[t][0] == spans[t - 1][0] and row[t] > row[t - 1]}
+
+
+def place(page, spans, t):
+    """The whitespace a line break before word t replaces, as (paragraph, segment, start, end);
+    inside a choice the positions are in its suggested option. None where the words touch."""
+    (pi, sa, _, ea), (_, sb, sbeg, _) = spans[t - 1], spans[t]
+    segs = page["paragraphs"][pi]["segments"]
+    if sa == sb:
+        return (pi, sa, ea, sbeg)
+    for si in range(sa, sb + 1):
+        s = segs[si]
+        if not isinstance(s, str):
+            continue
+        m = re.search(r"\s+$", s) if si == sa else re.match(r"\s+", s) if si == sb else re.fullmatch(r"\s+", s)
+        if m:
+            return (pi, si, m.start(), m.end())
+    return None
+
+
+def placed(page, spans, breaks):
+    """Where the breaks go: each at its own spot, or carried to the next possible spot in the paragraph."""
+    out, carry = {}, 0
+    for t in range(1, len(spans)):
+        if spans[t][0] != spans[t - 1][0]:
+            carry = 0  # a paragraph end is a line end anyway
+        carry += t in breaks
+        if carry and (p := place(page, spans, t)):
+            out[t] = p
+            carry -= 1
+    return out
+
+
+def put_break(page, spot):
+    pi, si, a, b = spot
+    segs = page["paragraphs"][pi]["segments"]
+    s = segs[si]
+    if isinstance(s, str):
+        segs[si] = s[:a] + "\n" + s[b:]
+        return
+    # inside a choice: the suggested option breaks here, another option where its words line up with it
+    sug = seg_text(s)
+    before, after = sug[:a].split(), sug[b:].split()
+    for o in s["options"]:
+        ms = list(re.finditer(r"\S+", o["text"]))
+        words = [m.group() for m in ms]
+        if words[:len(before)] == before:
+            k = len(before)
+        elif words[len(words) - len(after):] == after:
+            k = len(words) - len(after)
+        else:
+            continue
+        if k < len(words):
+            o["text"] = o["text"][:ms[k - 1].end() if k else 0] + "\n" + o["text"][ms[k].start():]
+
+
+def text_breaks(page, spans):
+    """Words that start a new line in the transcript as written."""
+    out = set()
+    for t in range(1, len(spans)):
+        (pa, sa, _, ea), (pb, sb, sbeg, _) = spans[t - 1], spans[t]
+        if pa != pb:
+            continue
+        segs = page["paragraphs"][pa]["segments"]
+        gap = seg_text(segs[sa])[ea:sbeg] if sa == sb else (
+            seg_text(segs[sa])[ea:] + "".join(seg_text(s) for s in segs[sa + 1:sb]) + seg_text(segs[sb])[:sbeg])
+        if "\n" in gap:
+            out.add(t)
+    return out
+
+
+def line_numbers(page, spans, breaks):
+    """The editor's line number of each word; None in a page-number paragraph (the editor doesn't number it)."""
+    nonum = [bool(PAGE_NO.match("".join(seg_text(s) for s in p.get("segments", []))))
+             for p in page.get("paragraphs", [])]
+    nums, ln = [], 0
+    for t, (pi, *_) in enumerate(spans):
+        if not nonum[pi] and (t == 0 or pi != spans[t - 1][0] or t in breaks):
+            ln += 1
+        nums.append(None if nonum[pi] else ln)
+    return nums
+
+
+def page_lines(page, spans, pairs, ocr):
+    """Fill the line breaks from the scan on a page without any; check them on a page with some.
+    Returns (report, changed)."""
+    has = any("\n" in seg_text(s) or (not isinstance(s, str) and any("\n" in o["text"] for o in s["options"]))
+              for p in page.get("paragraphs", []) for s in p.get("segments", []))
+    breaks = scan_breaks(spans, pairs, scan_rows(ocr))
+    if not has:
+        spots = placed(page, spans, breaks)
+        for spot in sorted(spots.values(), reverse=True):
+            put_break(page, spot)
+        n = max([x for x in line_numbers(page, spans, set(spots)) if x] or [0])
+        return f"{n} lines (filled from scan)", bool(spots)
+    actual = text_breaks(page, spans)
+    # a break written where the words touch, or carried past that spot, are both fine
+    expected = min((breaks, set(placed(page, spans, breaks))), key=lambda e: len(e ^ actual))
+    nums = line_numbers(page, spans, actual)
+    n = max([x for x in nums if x] or [0])
+    if expected == actual:
+        return f"{n} lines, matches scan", False
+    word = lambda t: seg_text(page["paragraphs"][spans[t][0]]["segments"][spans[t][1]])[spans[t][2]:spans[t][3]]
+    diffs = [f'line {nums[t]} starts with "{word(t)}", on the scan it continues line {nums[t] - 1}'
+             if t in actual else f'line {nums[t]}: on the scan a new line starts at "{word(t)}"'
+             for t in sorted(expected ^ actual)]
+    return f"{n} lines, {len(diffs)} line break{'s' if len(diffs) > 1 else ''} differ from the scan: " + "; ".join(diffs), False
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
@@ -179,14 +350,20 @@ def main():
         page = load_js(base / f)
         pno = page.get("page") or i + 1
         ocr = ocr_pages[pno - 1] if pno <= len(ocr_pages) else []
-        entries, plain, exact, approx = page_entries(page, ocr)
+        toks = transcript_tokens(page)
+        pairs = align([norm(t) for _, t in toks], [norm(w["text"]) for w in ocr])
+        entries, plain, exact, approx = page_entries(toks, pairs, ocr)
+        lines, changed = page_lines(page, token_spans(page), pairs, ocr)
         stem = Path(f).stem
+        if changed:
+            (base / f).write_text(f'(window.REVIEW_PAGES = window.REVIEW_PAGES || {{}})["{stem}"] = '
+                                  + json.dumps(page, ensure_ascii=False, indent=2) + ";\n", encoding="utf-8")
         wf = re.sub(r"\.js$", ".words.js", f, flags=re.I)
         (base / wf).write_text(f'(window.REVIEW_WORDS = window.REVIEW_WORDS || {{}})["{stem}"] = '
                                + json.dumps(entries, separators=(",", ":")) + ";\n", encoding="utf-8")
         word_files.append(wf)
         print(f"{f}: {exact}/{plain} words matched, {approx} more placed between neighbours, "
-              f"{plain - exact - approx} without position ({len(ocr)} OCR words)")
+              f"{plain - exact - approx} without position ({len(ocr)} OCR words); {lines}")
     idx["wordFiles"] = word_files
     index.write_text("window.REVIEW = " + json.dumps(idx, ensure_ascii=False, indent=2) + ";\n", encoding="utf-8")
 

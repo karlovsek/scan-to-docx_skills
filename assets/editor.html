@@ -34,10 +34,15 @@ main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}
 #loc{color:var(--accent);font-weight:600}
 .pop .row{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0 0}
 .scan iframe{width:100%;height:76vh;border:0}
-.doc{font-family:"Times New Roman",serif;font-size:17px;line-height:1.8}
-.doc p{margin:0 0 12px}
-.doc p.center{text-align:center}
-.doc p.indent{text-indent:2em}
+.doc{font-family:"Times New Roman",serif;font-size:16px;line-height:1.8;overflow-x:auto;counter-reset:ln}
+.doc p{margin:0}
+/* one .ln per scan line, numbered in the gutter; a page-number line ("- 8 -") is not counted */
+.ln{white-space:nowrap;min-height:1.8em;padding-left:3em;position:relative;counter-increment:ln}
+.ln::before{content:counter(ln);position:absolute;left:0;top:0;bottom:0;width:2.2em;display:flex;align-items:center;justify-content:flex-end;font:11px system-ui,sans-serif;color:var(--muted);user-select:none}
+.ln.nonum{counter-increment:none}
+.ln.nonum::before{content:none}
+.indent .ln:first-child{text-indent:2em}
+.center .ln{text-align:center}
 .pagehdr{font:12px system-ui,sans-serif;color:var(--muted);border-bottom:1px dashed var(--line);margin:0 0 12px;padding-bottom:4px}
 .doc [contenteditable]{outline:none;border-radius:3px}
 .doc [contenteditable]:focus{background:rgba(120,140,255,.12)}
@@ -103,11 +108,25 @@ function load(){try{return JSON.parse(localStorage.getItem(KEY))||{}}catch(e){re
 function save(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){} status()}
 const chips=[];R.pages.forEach((pg,pi)=>pg.paragraphs.forEach(p=>p.segments.forEach(s=>{if(typeof s!=="string")chips.push({c:s,page:pi})})));
 function segText(k,seg){
-  if(typeof seg==="string") return state[k]??seg;
+  if(typeof seg==="string") return state[k]!=null?keepBreaks(seg,state[k]):seg;
   const s=state[seg.id]||{};
   if(s.custom) return s.custom;
   return seg.options[s.pick??seg.suggested??0].text;
 }
+// "\n" in segment text ends a scan line. An edit saved before line breaks existed gets them back
+// after the same word numbers as in the original.
+function keepBreaks(orig,ed){
+  if(ed.includes("\n")||!orig.includes("\n"))return ed;
+  let n=0;const after=new Set(orig.split("\n").slice(0,-1).map(p=>n+=(p.match(/\S+/g)||[]).length));
+  const ws=[...ed.matchAll(/\S+/g)];
+  [...after].sort((a,b)=>b-a).forEach(n=>{
+    if(n>ws.length)return;
+    const a=n?ws[n-1].index+ws[n-1][0].length:0,b=n<ws.length?ws[n].index:ed.length;
+    ed=ed.slice(0,a)+"\n"+ed.slice(b);
+  });
+  return ed;
+}
+const PAGE_NO=/^[\s\-–—.]*\d+[\s\-–—.]*$/; // a paragraph with only a page number: its lines get no number
 function forEachPara(fn){R.pages.forEach((pg,gi)=>pg.paragraphs.forEach((p,pi)=>fn(p,gi,pi)))}
 const key=(gi,pi,si)=>`${gi}:${pi}:${si}`;
 function status(){const d=chips.filter(x=>state[x.c.id]?.done).length;document.getElementById("status").textContent=`${d}/${chips.length} difficult sections reviewed`}
@@ -198,7 +217,9 @@ function wordBoxes(gi,pi,si,wi){
 function showWord(sp,gi,pi,si){
   if(drawing||!R.pages[gi].words.length)return;
   const sel=getSelection();if(!sel.isCollapsed||!sp.contains(sel.anchorNode))return;
-  const off=sel.anchorOffset;let wi=-1,i=0;
+  // a segment can be split over several lines: count the words in its earlier pieces
+  const pieces=[...document.querySelectorAll(`#doc [data-k="${sp.dataset.k}"]`)];
+  const off=sel.anchorOffset;let wi=-1,i=pieces.slice(0,pieces.indexOf(sp)).reduce((a,e)=>a+(e.textContent.match(/\S+/g)||[]).length,0);
   for(const m of sp.textContent.matchAll(/\S+/g)){if(off>=m.index&&off<=m.index+m[0].length){wi=i;break}i++}
   const wb=wi<0?null:wordBoxes(gi,pi,si,wi);
   drawBoxes(wb?wb.boxes:[],gi);
@@ -210,14 +231,26 @@ function render(){
   // Only the current page is shown; keys still use the page index, so saved state is unchanged.
   const gi=curPage,pg=R.pages[gi];
   if(R.pages.length>1){const open=chips.filter(x=>x.page===gi&&!state[x.c.id]?.done).length,h=document.createElement("div");h.className="pagehdr";h.textContent=`Page ${gi+1} / ${R.pages.length}`+(open?` — ${open} unreviewed`:"");doc.appendChild(h)}
+  // One .ln per scan line: a segment's text is split at "\n" into pieces on consecutive lines.
   pg.paragraphs.forEach((p,pi)=>{
     const el=document.createElement("p");if(p.style)el.className=p.style;
+    const texts=p.segments.map((s,si)=>segText(key(gi,pi,si),s)),nonum=PAGE_NO.test(texts.join(""));
+    let ln;const newLine=()=>{ln=document.createElement("div");ln.className="ln"+(nonum?" nonum":"");el.appendChild(ln)};newLine();
     p.segments.forEach((s,si)=>{
-      const sp=document.createElement("span"),k=key(gi,pi,si);
-      if(typeof s==="string"){sp.contentEditable="true";sp.textContent=segText(k,s);sp.oninput=()=>{state[k]=sp.textContent;save()};sp.onfocus=()=>{if(curPage!==gi)showPage(gi)};sp.onclick=()=>showWord(sp,gi,pi,si)}
-      else{sp.className="chip"+(state[s.id]?.done?" done":"")+(active===s.id?" active":"");sp.textContent=segText(k,s);sp.title=s.title||"";sp.id="chip-"+s.id;
-        sp.onclick=()=>{stopDraw();active=s.id;render();showPop(s);showBoxes(s)}}
-      el.appendChild(sp);
+      const k=key(gi,pi,si);
+      texts[si].split("\n").forEach((piece,j)=>{
+        if(j)newLine();
+        const sp=document.createElement("span");sp.textContent=piece;
+        if(typeof s==="string"){sp.contentEditable="true";sp.dataset.k=k;
+          sp.oninput=()=>{state[k]=[...doc.querySelectorAll(`[data-k="${k}"]`)].map(e=>e.textContent).join("\n");save()};
+          sp.onkeydown=e=>{if(e.key==="Enter")e.preventDefault()}; // lines follow the scan
+          sp.onpaste=e=>{e.preventDefault();document.execCommand("insertText",false,e.clipboardData.getData("text/plain").replace(/\s*[\r\n]+\s*/g," "))};
+          sp.onfocus=()=>{if(curPage!==gi)showPage(gi)};sp.onclick=()=>showWord(sp,gi,pi,si)}
+        else{if(!piece)return;
+          sp.className="chip"+(state[s.id]?.done?" done":"")+(active===s.id?" active":"");sp.title=s.title||"";if(!j)sp.id="chip-"+s.id;
+          sp.onclick=()=>{stopDraw();active=s.id;render();showPop(s);showBoxes(s)}}
+        ln.appendChild(sp);
+      });
     });
     doc.appendChild(el);
   });
@@ -272,7 +305,18 @@ const POP_HINT=document.getElementById("pop").innerHTML;
 // ---- export ----
 const base=(R.title||"document").replace(/\.[^.]+$/,"");
 function download(name,blob){const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000)}
-document.getElementById("txt").onclick=()=>{const out=[];forEachPara((p,gi,pi)=>out.push(p.segments.map((s,si)=>segText(key(gi,pi,si),s)).join("")));download(base+".txt",new Blob([out.join("\n\n")],{type:"text/plain;charset=utf-8"}))};
+// Line breaks are only for review: the export joins a paragraph's lines into flowing text.
+function flatSegs(texts){
+  const out=[];
+  texts.forEach((t,i)=>{
+    let f=t.replace(/\s*\n\s*/g," ");
+    if(i&&/\s$/.test(out[i-1])&&(/\n\s*$/.test(texts[i-1])||/^\s*\n/.test(t)))f=f.replace(/^\s+/,""); // no double space at a segment edge
+    out.push(f);
+  });
+  return out;
+}
+const paraTexts=(p,gi,pi)=>flatSegs(p.segments.map((s,si)=>segText(key(gi,pi,si),s)));
+document.getElementById("txt").onclick=()=>{const out=[];forEachPara((p,gi,pi)=>out.push(paraTexts(p,gi,pi).join("")));download(base+".txt",new Blob([out.join("\n\n")],{type:"text/plain;charset=utf-8"}))};
 const x=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 function run(text,hl){return `<w:r><w:rPr><w:rFonts w:ascii="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/><w:sz w:val="24"/>${hl?'<w:highlight w:val="yellow"/>':""}<w:lang w:val="${R.lang||"sl-SI"}"/></w:rPr><w:t xml:space="preserve">${x(text)}</w:t></w:r>`}
 function documentXml(){
@@ -281,7 +325,7 @@ function documentXml(){
     if(gi>0&&R.pageBreaks!==false) body+='<w:p><w:r><w:br w:type="page"/></w:r></w:p>';
     pg.paragraphs.forEach((p,pi)=>{
       const ppr=p.style==="center"?'<w:jc w:val="center"/>':p.style==="indent"?'<w:ind w:firstLine="567"/>':"";
-      const runs=p.segments.map((s,si)=>run(segText(key(gi,pi,si),s),typeof s!=="string"&&!state[s.id]?.done)).join("");
+      const texts=paraTexts(p,gi,pi),runs=p.segments.map((s,si)=>run(texts[si],typeof s!=="string"&&!state[s.id]?.done)).join("");
       body+=`<w:p><w:pPr><w:spacing w:after="160" w:line="360" w:lineRule="auto"/>${ppr}</w:pPr>${runs}</w:p>`;
     });
   });
