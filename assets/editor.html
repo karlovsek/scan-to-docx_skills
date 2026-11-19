@@ -49,6 +49,9 @@ main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px}
 .chip{background:var(--warn);border-bottom:2px solid var(--warnb);padding:1px 3px;border-radius:3px;cursor:pointer}
 .chip.done{background:var(--ok);border-bottom-color:var(--okb)}
 .chip.active{outline:2px solid var(--accent)}
+/* how sure the transcriber is that the suggested option is right, after the chip's last piece */
+.chip[data-conf]::after{content:attr(data-conf) " %";font:10px system-ui,sans-serif;color:var(--muted);vertical-align:super;margin-left:3px}
+.chip.low[data-conf]::after{color:#c0392b;font-weight:700}
 .pop{margin-top:16px;border-top:1px solid var(--line);padding-top:12px}
 .pop h3{margin:0 0 6px;font-size:15px}
 .note{color:var(--muted);font-size:13px;margin:0 0 8px}
@@ -237,7 +240,7 @@ function render(){
     const texts=p.segments.map((s,si)=>segText(key(gi,pi,si),s)),nonum=PAGE_NO.test(texts.join(""));
     let ln;const newLine=()=>{ln=document.createElement("div");ln.className="ln"+(nonum?" nonum":"");el.appendChild(ln)};newLine();
     p.segments.forEach((s,si)=>{
-      const k=key(gi,pi,si);
+      const k=key(gi,pi,si);let lastChip=null;
       texts[si].split("\n").forEach((piece,j)=>{
         if(j)newLine();
         const sp=document.createElement("span");sp.textContent=piece;
@@ -246,11 +249,13 @@ function render(){
           sp.onkeydown=e=>{if(e.key==="Enter")e.preventDefault()}; // lines follow the scan
           sp.onpaste=e=>{e.preventDefault();document.execCommand("insertText",false,e.clipboardData.getData("text/plain").replace(/\s*[\r\n]+\s*/g," "))};
           sp.onfocus=()=>{if(curPage!==gi)showPage(gi)};sp.onclick=()=>showWord(sp,gi,pi,si)}
-        else{if(!piece)return;
-          sp.className="chip"+(state[s.id]?.done?" done":"")+(active===s.id?" active":"");sp.title=s.title||"";if(!j)sp.id="chip-"+s.id;
-          sp.onclick=()=>{stopDraw();active=s.id;render();showPop(s);showBoxes(s)}}
+        else{if(!piece&&(j||texts[si]))return;
+          if(!texts[si])sp.textContent="∅"; // an empty reading stays clickable
+          sp.className="chip"+(state[s.id]?.done?" done":"")+(active===s.id?" active":"")+(s.confidence<60?" low":"");sp.title=s.title||"";if(!j)sp.id="chip-"+s.id;
+          sp.onclick=()=>{stopDraw();active=s.id;render();showPop(s);showBoxes(s)};lastChip=sp}
         ln.appendChild(sp);
       });
+      if(lastChip&&s.confidence!=null)lastChip.dataset.conf=s.confidence;
     });
     doc.appendChild(el);
   });
@@ -261,6 +266,7 @@ function showPop(c){
   const st=state[c.id]||{},pop=document.getElementById("pop"),sug=c.suggested??0;
   const pick=st.custom?-1:(st.pick??sug);
   pop.innerHTML=`<h3>${h(c.title||"Uncertain section")}</h3><p class="note">${h(c.note||"")}</p>`+
+    (c.confidence!=null?`<p class="note">Confidence in the suggested reading: <b>${h(c.confidence)} %</b></p>`:"")+
     c.options.map((o,i)=>`<label><input type="radio" name="o" value="${i}" ${pick===i?"checked":""}> ${h(o.text)}${o.label?` <i>(${h(o.label)})</i>`:""}${i===sug?" <b>(suggested)</b>":""}</label>`).join("")+
     `<label><input type="radio" name="o" value="-1" ${pick===-1?"checked":""}> Custom:</label><input type="text" id="cust" value="${h(st.custom||"")}">`+
     `<p class="row"><button class="primary" id="ok">Mark reviewed</button>`+

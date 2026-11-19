@@ -7,7 +7,7 @@ description: Transcribe scanned documents (PDF pages, JPG/PNG scans, typewritten
 
 Goal: a faithful transcription of scanned pages into .docx, where every place you are not sure about is visible and decidable by the user, rather than silently guessed. Old typescripts with handwritten corrections are the typical input; the hard part is the handwriting, not the typed text.
 
-**You read every page yourself, with your own vision.** Never use Python, OCR engines or a PDF's text layer to get the text. OCR engines misread handwritten corrections, which is exactly what matters here. The only tool you run on the scan is `pdftoppm` (Poppler), and only to make page images (step 1).
+**You read every page yourself, with your own vision.** Never use Python, OCR engines or a PDF's text layer to get the text. OCR engines misread handwritten corrections, which is exactly what matters here. The only tool you run on the scan for reading is `pdftoppm` (Poppler), to make page images (step 1); OCR is used later only for word positions (5d).
 
 Documents are usually long, so everything is **per page**: one image and one transcription file for each page, side by side. The deliverables, all next to the source file:
 - `<name>_pages/p-1.png`, `p-2.png`, ...: the page images (rendered from the PDF)
@@ -54,7 +54,7 @@ Anything where a reasonable reader of the scan could choose differently becomes 
 - Capitalization that depends on whether something is a proper name
 - Optional style improvements. Offer these only as a choice and keep the original as the suggestion unless it's actually wrong
 
-Each choice gets a short title, a note describing **exactly what is visible on the page** (so the user can verify against the scan), 2–4 options, and the index of your suggested option. Make each option a complete phrase that can stand in the sentence, so spacing works out. Aim for precision: don't flag clear typed text, and don't hide real doubts. Too many flags waste the user's time, but a missed doubt ends up as a silent error.
+Each choice gets a short title, a note describing **exactly what is visible on the page** (so the user can verify against the scan), 2–4 options, the index of your suggested option, and a `confidence` (0–100): how sure you are that the suggested option is right. Calibrate it honestly (95+ clearly visible and only flagged for form, ~80 likely, ~60 real doubt, below 50 a best guess); the editor shows it next to the spot and marks values below 60 in red, so the user can start with the weakest. Make each option a complete phrase that can stand in the sentence, so spacing works out. Aim for precision: don't flag clear typed text, and don't hide real doubts. Too many flags waste the user's time, but a missed doubt ends up as a silent error.
 
 Also give each choice its **location on the page** as `boxes`: a list of rectangles `{"x","y","w","h"}` in fractions of the page width/height (0–1, origin top-left). Estimate them from the page image (pixel position ÷ image size); err on the side of slightly too large. Use several rectangles when a correction is split (e.g. a margin note plus an insertion above the line). The editor draws the boxes over the scan and scrolls there; the user can fix a wrong box ("Fix location").
 
@@ -81,7 +81,7 @@ Write `<name>_pages/<stem>.js` for each page, next to its image (`p-1.js` next t
       "Zoper Bonača, ki je bil ",
       {"id": "p1c1", "title": "\"tu\" struck, \"na sodniji\" above",
        "note": "\"tu\" has a stroke through it; \"na sodniji\" is written above with an insertion mark.",
-       "suggested": 0,
+       "suggested": 0, "confidence": 85,
        "boxes": [{"x": 0.45, "y": 0.215, "w": 0.13, "h": 0.085}],
        "options": [{"text": "na sodniji"}, {"text": "tu na sodniji"}, {"text": "tu", "label": "typed text only"}]},
       " brez moči\nin premoženja ..."
@@ -93,6 +93,7 @@ Write `<name>_pages/<stem>.js` for each page, next to its image (`p-1.js` next t
 - The key (`"p-1"`) must equal the file's stem exactly, including padding (`"p-01"`).
 - `image` is relative to the folder of the editor (the source file's folder), so it includes `<name>_pages/`. Without rendered images: `"image": "sample1.pdf", "page": 1`.
 - `notes` are per page; the editor shows them prefixed with the page number.
+- Write `notes`, `title`, `note` and `label` in the user's language (the language they wrote to you in), not in the language of these instructions or of a subagent brief.
 - `style` is `""`, `"indent"` (first-line indent) or `"center"`. `label` is an optional explanation shown in the app but not exported. `boxes` is only for showing the location in the editor.
 - `\n` marks the end of a scan line (section 2) and may also appear inside an option's `text` when the line ends within the choice.
 - Choice ids must be unique across the whole document: prefix them with the page number (`p12c1`, `p12c2`, ...).
@@ -121,9 +122,11 @@ Validate before reporting: load all files with Node and check that every page re
 
 Copy `assets/editor.html` to `<name>_editor.html` in the source file's folder, replacing the placeholder `__DATA_FILE__` with the index file's name (e.g. `sed 's/__DATA_FILE__/<name>_review_data.js/g'`, or Read the asset and Write the copy).
 
-### 5d. Word positions (PDF with a text layer)
+### 5d. Word positions and line check
 
-If the source is a PDF, run `python3 <skill dir>/scripts/word_boxes.py <source.pdf> <name>_review_data.js` after 5b. It reads the word positions from the PDF's own OCR layer (Adobe Scan and most phone scanner apps include one; needs Poppler's `pdftotext`), matches them to your transcript, writes `<stem>.words.js` next to each page file and adds `"wordFiles"` to the index. Clicking a plain word in the editor then highlights it on the scan. It prints how many words per page got a position; a PDF without a text layer gets "no text layer" and nothing changes (the editor works as before). It also uses the OCR rows for the line breaks: on a page without any `\n` it fills them in and rewrites the page file; on a page with them it only checks them and prints the lines that differ from the scan (look at those lines on the image and fix the transcript if the scan agrees). Like the word positions, this uses the text layer only for positions and lines, never for the text. Rerun it whenever a page file is rewritten, since positions refer to paragraph/segment/word numbers.
+Run `python3 <skill dir>/scripts/word_boxes.py <source.pdf> <name>_review_data.js` after 5b (for JPG/PNG input leave out the PDF: `word_boxes.py <name>_review_data.js`). It finds where each transcript word is on the scan, writes `<stem>.words.js` next to each page file and adds `"wordFiles"` to the index; clicking a plain word in the editor then highlights it on the scan. Positions come from the PDF's own OCR layer (Adobe Scan and most phone scanner apps include one; needs Poppler's `pdftotext`); without one (copier scans, images) from Tesseract on the page images, if `tesseract` and the language pack are installed (`sudo apt install tesseract-ocr tesseract-ocr-slv`). With neither it says so and changes nothing.
+
+It also compares your line breaks with the OCR's lines: a page without any `\n` gets them filled in (the page file is rewritten); a page with them is only checked, and the lines that differ are printed. Look at each reported line on the image and fix the transcript only if the scan agrees: around handwritten corrections the OCR often splits or misreads a line, so some reports are false alarms. In every case OCR is used only for positions and lines, never for the text. Rerun it whenever a page file is rewritten, since positions refer to paragraph/segment/word numbers.
 
 ## 6. Export from the editor
 
